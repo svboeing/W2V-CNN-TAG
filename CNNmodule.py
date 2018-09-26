@@ -2,8 +2,8 @@ import tensorflow as tf
 
 
 class CNN:
-    def __init__(self, embedding, n_embedding=200, sent_max_features=5000, sent_maxlen=400, n_filters=250,
-                 sent_kernel_size=3, sent_hidden_dims=250, sent_learning_rate=0.003, sent_width=3, sent_eval_batch_size=64):
+    def __init__(self, embedding, n_embedding, sent_max_features, sent_maxlen, n_filters,
+                 sent_kernel_size, sent_hidden_dims, sent_learning_rate, sent_width, sent_eval_batch_size):
         # params
         self.max_features = sent_max_features
         self.maxlen = sent_maxlen
