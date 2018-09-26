@@ -3,8 +3,8 @@ import numpy as np
 
 
 class TAGGER:
-    def __init__(self, embedding, word_id, pref_id, tag_id, tagger_batch_size, n_embedding=200, tagger_learning_rate=0.01,
-                 n_hidden_1=256,n_hidden_2=64, num_input = 24, num_classes = 17, n_tag_emb=30, n_suf_emb=10):
+    def __init__(self, embedding, word_id, pref_id, tag_id, tagger_batch_size, n_embedding, tagger_learning_rate,
+                 n_hidden_1, n_hidden_2, num_input, num_classes, n_tag_emb, n_suf_emb):
         self.n_embedding = n_embedding
         self.learning_rate = tagger_learning_rate
         self.n_hidden_1 = n_hidden_1
