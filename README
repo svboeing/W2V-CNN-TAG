@@ -1,4 +1,4 @@
 This is a joint model that consists of a w2v, a tagger, and a CNN for sentiment analysis, that have common word embeddings. 
 Base corpus (and w2v input) is text8 and is not uploaded.
-Tagger is trained using corpus from universaltransitions.com; it is uploaded.
+Tagger is trained using corpus from universaltransitions.com; it is uploaded (the .conllu file).
 CNN is trained on keras' imdb corpus.

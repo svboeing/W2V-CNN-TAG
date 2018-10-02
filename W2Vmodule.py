@@ -3,7 +3,7 @@ import numpy as np
 
 
 class W2V:
-    def __init__(self, embedding, n_vocab, n_embedding=200, sub_threshold=1e-5, n_sampled=100, w2v_window_size=6):
+    def __init__(self, embedding, n_vocab, n_embedding, sub_threshold, n_sampled, w2v_window_size):
         self.sub_threshold = sub_threshold
         self.n_sampled = n_sampled
         self.window_size = w2v_window_size
