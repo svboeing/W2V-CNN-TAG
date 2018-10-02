@@ -38,6 +38,7 @@ class TAGGER:
         self.logits = self.neural_net(tagger_batch_size)
         self.test_logits = self.neural_net(1)
         self.test_output_labels = tf.argmax(self.test_logits, 1)
+
         self.correct_pred = tf.equal(self.test_output_labels, tf.argmax(self.Y, 1))
         self.accuracy = tf.reduce_mean(tf.cast(self.correct_pred, tf.float32))
 

@@ -40,22 +40,9 @@ num_classes = 17
 n_tag_emb = 30
 n_suf_emb = 10
 
-# Preprocess w2v input:
-with open('text8') as f:
-    text = f.read()
-
-w2v_words = text.split(' ')
-w2v_words = w2v_words[1:]
-
-# Sort word tokens by frequencies and save them:
-word_counts = Counter(w2v_words)
-counts = [count for count in word_counts.values()]
-unique_sorted_words = [word for word in sorted(word_counts, key=lambda k: word_counts[k], reverse=True)]
+unique_sorted_words = np.load("/home/boeing/PycharmProjects/CNN/JOINT_sorted_words.npy")
 unique = set(unique_sorted_words)
-unique_sorted_words = np.asarray(unique_sorted_words)
-np.save("/home/boeing/PycharmProjects/CNN/JOINT_sorted_words", unique_sorted_words)
 
-# Set vocabs. id = 0 is reserved for 'unknown' word
 vocab_to_int = {}
 int_to_vocab = {}
 
@@ -63,16 +50,7 @@ for i, word in enumerate(unique_sorted_words):
     vocab_to_int[word] = i+1
     int_to_vocab[i+1] = word
 
-int_words = [vocab_to_int[word] for word in w2v_words]
 
-# Subsampling:
-word_counts = Counter(int_words)
-total_count = len(int_words)
-freqs = {word: count / total_count for word, count in word_counts.items()}
-p_drop = {word: 1 - np.sqrt(sub_threshold / freqs[word]) for word in word_counts}
-w2v_train_words = [word for word in int_words if random.random() < (1 - p_drop[word])]
-w2v_batch_size = len(w2v_train_words) // num_global_batches
-w2v_train_words = w2v_train_words[:num_global_batches * w2v_batch_size]
 
 # Preprocess CNN (sentiment analysis) input:
 (sent_train_words_raw, sent_train_labels), (sent_test_words_raw, sent_test_labels) = imdb.load_data(
@@ -138,7 +116,10 @@ with open("en_pud-ud-test.conllu", "r") as f:
             tagged_words_tags.append(splitted[3])
 
 # Split corpus by 80/20:
-tagger_train_amount = round(len(tagged_words) * 0.8)
+tagger_train_amount = round(len(tagged_words) * 0.8) #????????????????????????????????????????????????
+
+# TAGS number 12 and 14 are NOT IN THE DATASET. Tag number 6 is not in the test dataset.
+
 tagger_train_words = tagged_words[:tagger_train_amount]
 train_tags = tagged_words_tags[:tagger_train_amount]
 tagger_test_words = tagged_words[tagger_train_amount:]
@@ -146,6 +127,9 @@ test_tags = tagged_words_tags[tagger_train_amount:]
 
 tagger_train_labels = [tag_id[tag] for tag in train_tags]
 tagger_test_labels = [tag_id[tag] for tag in test_tags]
+
+tagger_all_labels = [tag_id[tag]-1 for tag in tagged_words_tags]
+#tagger_all_labels = [t-1 for t in tagger_all_labels]
 
 # Only full batches on training:
 tagger_batch_size = len(tagger_train_words) // num_global_batches
@@ -167,88 +151,44 @@ W2V_net = W2Vmodule.W2V(embedding, n_vocab, n_embedding, sub_threshold, n_sample
 TAGGER_net = TAGGERmodule.TAGGER(embedding, word_id, pref_id, tag_id, tagger_batch_size, n_embedding, tagger_learning_rate,
                  n_hidden_1, n_hidden_2, num_input, num_classes, n_tag_emb, n_suf_emb)
 
-def get_joint_batches(w2v_train_words, sent_train_words, sent_train_labels, tagger_train_words, tagger_train_labels):
-    for i in range(num_global_batches):
-
-        # w2v part:
-        w2v_x, w2v_y = [], []
-        w2v_batch = w2v_train_words[i * w2v_batch_size:(i + 1) * w2v_batch_size]
-        for ii in range(len(w2v_batch)):
-            batch_x = w2v_batch[ii]
-            batch_y = W2V_net.get_target(w2v_batch, ii)
-            w2v_y.extend(batch_y)
-            w2v_x.extend([batch_x] * len(batch_y))
-
-        # cnn part:
-        sent_x = sent_train_words[i * sent_batch_size:(i + 1) * sent_batch_size]
-        sent_y = sent_train_labels[i * sent_batch_size:(i + 1) * sent_batch_size]
-
-        # tagger part:
-        tagger_x = TAGGER_net.form_minibatch(tagger_train_words, tagger_train_labels, i * tagger_batch_size,
-                                             tagger_batch_size, word_id, pref_id)
-        tagger_y = TAGGER_net.form_onehot_batch(tagger_train_labels, i * tagger_batch_size, tagger_batch_size)
-        if i % 100 == 0:
-            print("batch number",i)
-
-        yield w2v_x, w2v_y, sent_x, sent_y, tagger_x, tagger_y
-
 
 saver = tf.train.Saver()
 
 with tf.Session() as sess:
-    loss = 0
-    sess.run(tf.global_variables_initializer())
-    # Training all three nets:
-    for e in range(1, epochs + 1):
-        print("epoch number", e)
-        BATCH = get_joint_batches(w2v_train_words, sent_train_words, sent_train_labels, tagger_train_words, tagger_train_labels)
-        for x_1, y_1, x_2, y_2, x_3, y_3 in BATCH:
-            sess.run(W2V_net.train, feed_dict={W2V_net.X: x_1, W2V_net.Y: np.array(y_1)[:, None]})
-            sess.run(CNN_net.train, feed_dict={CNN_net.X: x_2, CNN_net.Y: y_2})
-            sess.run(TAGGER_net.train, feed_dict={TAGGER_net.X: x_3, TAGGER_net.Y: y_3})
+    saver.restore(sess, tf.train.latest_checkpoint('checkpoints'))
 
-    # Save trained session:
-    save_path = saver.save(sess, "checkpoints/model.ckpt")
-    embed_mat = sess.run(W2V_net.normalized_embedding)
-    embed_mat = np.asarray(embed_mat)
-    np.save("/home/boeing/PycharmProjects/CNN/w2v_a_embedding", embed_mat)
+
 
     # Evaluate tagger:
     #tagger_test_acc = np.array([], dtype="float32")
     tags_learned = np.array([], dtype="int32")
-
     for i in range(len(tagger_test_words)):
         x = TAGGER_net.form_minibatch(tagger_test_words, tags_learned, i, 1, word_id, pref_id)
         y = TAGGER_net.form_onehot_batch(tagger_test_labels, i, 1)
 
-        #accuracy = sess.run(TAGGER_net.accuracy, feed_dict={TAGGER_net.X: x, TAGGER_net.Y: y})
-        #tagger_test_acc = np.append(tagger_test_acc, accuracy)
 
         logits = sess.run(TAGGER_net.test_logits,
-                          feed_dict={TAGGER_net.X: x, TAGGER_net.Y: y})
+                                         feed_dict={TAGGER_net.X: x, TAGGER_net.Y: y})
         logits = logits[0]
 
         label_learned = np.argmax(logits)
         tags_learned = np.append(tags_learned, label_learned)
 
-    #with open("tagger_accs.txt", "a") as f:
-    #    f.write(str(np.mean(tagger_test_acc)))
-    #print("average tagger test accuracy =", np.mean(tagger_test_acc))
-    tagger_test_labels = np.asarray(tagger_test_labels, dtype='int32') - np.ones(len(tagger_test_labels), dtype='int32')
 
 
+    tagger_test_labels = np.asarray(tagger_test_labels, dtype = 'int32')-np.ones(len(tagger_test_labels), dtype = 'int32')
+
+    for i in range(num_classes):
+        print(i, i in tagger_test_labels, i in tags_learned, i in tagger_all_labels)
     score = np.asarray(f1_score(y_true=tagger_test_labels,
                                 y_pred=tags_learned, average=None))
     score_weighted = f1_score(y_true=tagger_test_labels,
-                              y_pred=tags_learned, average='weighted')
+                                y_pred=tags_learned, average='weighted')
     print('TAGGER WEIGHTED F1 score:', score_weighted)
+
     present_labels = [label for label in range(num_classes) if label in tagger_test_labels and label in tags_learned]
     tagger_f1_dict = dict(zip(present_labels, score))
     print(tagger_f1_dict)
-
-    #print(score)
-
-
     # Evaluate CNN:
     sent_prediction = np.array([])
     i = 0
@@ -261,10 +201,10 @@ with tf.Session() as sess:
 
     # Obtain label predictions by rounding predictions to int:
     sent_prediction = [int(round(t)) for t in sent_prediction]
-
+    #print(sent_prediction, sent_test_labels)
     # Use F1 metric:
     F1 = f1_score(y_true=sent_test_labels, y_pred=sent_prediction, average=None)
     with open("cnn_accs.txt", "a") as f:
         f.write(str(F1))
-    print("SENTIMENT F1 score: ", F1)
+    print("SENTIMENT F1 score:", F1)
     sess.close()
