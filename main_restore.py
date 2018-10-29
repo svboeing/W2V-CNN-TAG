@@ -30,6 +30,7 @@ sent_eval_batch_size = 64
 # Set w2v parameters:
 n_sampled = 100
 w2v_window_size = 6
+w2v_test_batch_size = 1000
 
 # Set tagger parameters:
 tagger_learning_rate = 0.01
@@ -40,9 +41,19 @@ num_classes = 17
 n_tag_emb = 30
 n_suf_emb = 10
 
+with open('text8') as f:
+    text = f.read()
+
+w2v_words = text.split(' ')
+w2v_words = w2v_words[1:-int(round(0.05*len(w2v_words)))]
+w2v_test = w2v_words[-int(round(0.05*len(w2v_words))):]
+
 unique_sorted_words = np.load("/home/boeing/PycharmProjects/CNN/JOINT_sorted_words.npy")
 unique = set(unique_sorted_words)
 
+w2v_test = [word for word in w2v_test if word in unique]
+
+# Set vocabs. id = 0 is reserved for 'unknown' word
 vocab_to_int = {}
 int_to_vocab = {}
 
@@ -50,7 +61,22 @@ for i, word in enumerate(unique_sorted_words):
     vocab_to_int[word] = i+1
     int_to_vocab[i+1] = word
 
-
+int_words = [vocab_to_int[word] for word in w2v_words]
+w2v_test = [vocab_to_int[word] for word in w2v_test]
+# Subsampling:
+word_counts = Counter(int_words)
+total_count = len(int_words)
+freqs = {word: count / total_count for word, count in word_counts.items()}
+p_drop = {word: 1 - np.sqrt(sub_threshold / freqs[word]) for word in word_counts}
+w2v_train_words = [word for word in int_words if random.random() < (1 - p_drop[word])]
+w2v_batch_size = len(w2v_train_words) // num_global_batches
+#maybe gotta get test to full batches
+w2v_test_batch_number = len(w2v_test) // w2v_test_batch_size
+w2v_train_words = w2v_train_words[:num_global_batches * w2v_batch_size]
+w2v_test = w2v_test[:w2v_test_batch_size * w2v_test_batch_number]
+for i, word in enumerate(unique_sorted_words):
+    vocab_to_int[word] = i+1
+    int_to_vocab[i+1] = word
 
 # Preprocess CNN (sentiment analysis) input:
 (sent_train_words_raw, sent_train_labels), (sent_test_words_raw, sent_test_labels) = imdb.load_data(
@@ -156,7 +182,21 @@ saver = tf.train.Saver()
 
 with tf.Session() as sess:
     saver.restore(sess, tf.train.latest_checkpoint('checkpoints'))
-
+    # Evaluate w2v:
+    w2v_scores = []
+    for i in range(w2v_test_batch_number):
+        w2v_x, w2v_y = [], []
+        w2v_batch = w2v_test[i * w2v_test_batch_size:(i + 1) * w2v_test_batch_size]
+        for ii in range(len(w2v_batch)):
+            batch_x = w2v_batch[ii]
+            batch_y = W2V_net.get_target(w2v_batch, ii)
+            w2v_y.extend(batch_y)
+            w2v_x.extend([batch_x] * len(batch_y))
+        w2v_test_loss = sess.run(W2V_net.test_loss, feed_dict={W2V_net.X: w2v_x, W2V_net.test_Y: np.array(w2v_y)})
+        w2v_scores = np.append(w2v_scores, np.asarray(w2v_test_loss))
+    print(w2v_scores.shape)
+    w2v_score = np.mean(w2v_scores)
+    print("WORD TO VEC mean loss score:", w2v_score)
 
 
     # Evaluate tagger:
@@ -173,8 +213,6 @@ with tf.Session() as sess:
 
         label_learned = np.argmax(logits)
         tags_learned = np.append(tags_learned, label_learned)
-
-
 
     tagger_test_labels = np.asarray(tagger_test_labels, dtype = 'int32')-np.ones(len(tagger_test_labels), dtype = 'int32')
 

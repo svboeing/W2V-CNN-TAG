@@ -10,12 +10,19 @@ from sklearn.metrics import f1_score
 import CNNmodule
 import W2Vmodule
 import TAGGERmodule
+import PERCmodule
 
 # Set global parameters:
 n_embedding = 200
 num_global_batches = 5000
-epochs = 15
+epochs = 15 #15
 sub_threshold = 1e-5
+attention_size = 2
+
+# Set PERC parameters:
+perc_learning_rate = 0.01
+perc_n_hidden = 128
+perc_n_sampled = 100
 
 # Set CNN parameters:
 sent_max_features = 5000
@@ -30,6 +37,7 @@ sent_eval_batch_size = 64
 # Set w2v parameters:
 n_sampled = 100
 w2v_window_size = 6
+w2v_test_batch_size = 10 ##### WHATS THERE
 
 # Set tagger parameters:
 tagger_learning_rate = 0.01
@@ -40,31 +48,40 @@ num_classes = 17
 n_tag_emb = 30
 n_suf_emb = 10
 
+
+
 # Preprocess w2v input:
 with open('text8') as f:
     text = f.read()
 
 w2v_words = text.split(' ')
-w2v_words = w2v_words[1:]
+w2v_words = w2v_words[1:-int(round(0.05*len(w2v_words)))]
+w2v_test = w2v_words[-int(round(0.05*len(w2v_words))):]
+print(len(w2v_words), len(w2v_test))
 
 # Sort word tokens by frequencies and save them:
 word_counts = Counter(w2v_words)
 counts = [count for count in word_counts.values()]
 unique_sorted_words = [word for word in sorted(word_counts, key=lambda k: word_counts[k], reverse=True)]
-unique = set(unique_sorted_words)
+#unique = set(unique_sorted_words)
 unique_sorted_words = np.asarray(unique_sorted_words)
+unique = set(unique_sorted_words[:5000])
+#w2v_tokens = set(unique)
+
 np.save("/home/boeing/PycharmProjects/CNN/JOINT_sorted_words", unique_sorted_words)
+
+#w2v_test = [word for word in w2v_test if word in unique]
 
 # Set vocabs. id = 0 is reserved for 'unknown' word
 vocab_to_int = {}
 int_to_vocab = {}
 
-for i, word in enumerate(unique_sorted_words):
+for i, word in enumerate(unique_sorted_words[:5000]):
     vocab_to_int[word] = i+1
     int_to_vocab[i+1] = word
 
-int_words = [vocab_to_int[word] for word in w2v_words]
-
+int_words = [vocab_to_int[word] for word in w2v_words if word in unique]
+w2v_test = [vocab_to_int[word] for word in w2v_test if word in unique]
 # Subsampling:
 word_counts = Counter(int_words)
 total_count = len(int_words)
@@ -73,6 +90,9 @@ p_drop = {word: 1 - np.sqrt(sub_threshold / freqs[word]) for word in word_counts
 w2v_train_words = [word for word in int_words if random.random() < (1 - p_drop[word])]
 w2v_batch_size = len(w2v_train_words) // num_global_batches
 w2v_train_words = w2v_train_words[:num_global_batches * w2v_batch_size]
+w2v_test_batch_number = len(w2v_test) // w2v_test_batch_size
+w2v_test = w2v_test[:w2v_test_batch_size * w2v_test_batch_number]
+
 
 # Preprocess CNN (sentiment analysis) input:
 (sent_train_words_raw, sent_train_labels), (sent_test_words_raw, sent_test_labels) = imdb.load_data(
@@ -156,16 +176,24 @@ tagger_train_labels = tagger_train_labels[:num_global_batches * tagger_batch_siz
 n_vocab = len(int_to_vocab) + 1
 
 # Common embeddings variable:
-embedding = tf.Variable(tf.random_uniform((n_vocab, n_embedding), -1, 1))
+embedding = tf.Variable(tf.random_uniform((n_vocab, n_embedding), -1, 1, seed = 123), name = 'common_embs')
 
 # Create instances of neural nets with parameters specified:
-CNN_net = CNNmodule.CNN(embedding, n_embedding, sent_max_features, sent_maxlen, n_filters,
-                 sent_kernel_size, sent_hidden_dims, sent_learning_rate, sent_width, sent_eval_batch_size)
 
-W2V_net = W2Vmodule.W2V(embedding, n_vocab, n_embedding, sub_threshold, n_sampled, w2v_window_size)
+PERC_net = PERCmodule.PERC(embedding, n_embedding, perc_n_hidden, perc_learning_rate, perc_n_sampled)
 
-TAGGER_net = TAGGERmodule.TAGGER(embedding, word_id, pref_id, tag_id, tagger_batch_size, n_embedding, tagger_learning_rate,
-                 n_hidden_1, n_hidden_2, num_input, num_classes, n_tag_emb, n_suf_emb)
+#better pass whole PERC_net?
+CNN_net = CNNmodule.CNN(embedding, PERC_net.cost, n_embedding, n_vocab, attention_size, sent_max_features, sent_maxlen, n_filters,
+                 sent_kernel_size, sent_hidden_dims, sent_learning_rate, sent_width, sent_eval_batch_size) #0
+# Ha -Ha!!!! WORKS TILL HERE
+
+
+W2V_net = W2Vmodule.W2V(embedding, PERC_net.cost, n_vocab, n_embedding, attention_size, sub_threshold, n_sampled, w2v_window_size) #1
+
+TAGGER_net = TAGGERmodule.TAGGER(embedding, PERC_net.cost, word_id, n_vocab, attention_size, pref_id, tag_id, tagger_batch_size, n_embedding,
+                 tagger_learning_rate, n_hidden_1,n_hidden_2, num_input, num_classes, n_tag_emb, n_suf_emb) #2
+
+# TILL HERE TODO check out whats wrong with taggers f1
 
 def get_joint_batches(w2v_train_words, sent_train_words, sent_train_labels, tagger_train_words, tagger_train_labels):
     for i in range(num_global_batches):
@@ -189,29 +217,93 @@ def get_joint_batches(w2v_train_words, sent_train_words, sent_train_labels, tagg
         tagger_y = TAGGER_net.form_onehot_batch(tagger_train_labels, i * tagger_batch_size, tagger_batch_size)
         if i % 100 == 0:
             print("batch number",i)
+        batch_words = list(set(w2v_batch)|set(sent_x.flatten())|set(
+            [word_id[word] for word in tagger_train_words[i*tagger_batch_size : (i+1)*tagger_batch_size]]))
 
-        yield w2v_x, w2v_y, sent_x, sent_y, tagger_x, tagger_y
-
+        yield w2v_x, w2v_y, sent_x, sent_y, tagger_x, tagger_y, batch_words
 
 saver = tf.train.Saver()
+
+# TODO ask kostya about passing losses - how does it work?
+
+w = tf.placeholder("int32", [None, ])
+common_batch_embs, w2v_own_batch_embs, sent_own_batch_embs, tagger_own_batch_embs = \
+        tf.gather(embedding, w), tf.gather(W2V_net.own_attented_embs, w), \
+        tf.gather(CNN_net.own_attented_embs, w), tf.gather(TAGGER_net.own_attented_embs, w)
+
+sent_dist, w2v_dist, tagger_dist = tf.norm(common_batch_embs - sent_own_batch_embs, axis=1), \
+        tf.norm(common_batch_embs - w2v_own_batch_embs, axis=1), \
+        tf.norm(common_batch_embs - tagger_own_batch_embs, axis=1)
+
 
 with tf.Session() as sess:
     loss = 0
     sess.run(tf.global_variables_initializer())
+
+
+    sess.graph.finalize()
+
+
     # Training all three nets:
     for e in range(1, epochs + 1):
         print("epoch number", e)
         BATCH = get_joint_batches(w2v_train_words, sent_train_words, sent_train_labels, tagger_train_words, tagger_train_labels)
-        for x_1, y_1, x_2, y_2, x_3, y_3 in BATCH:
-            sess.run(W2V_net.train, feed_dict={W2V_net.X: x_1, W2V_net.Y: np.array(y_1)[:, None]})
-            sess.run(CNN_net.train, feed_dict={CNN_net.X: x_2, CNN_net.Y: y_2})
-            sess.run(TAGGER_net.train, feed_dict={TAGGER_net.X: x_3, TAGGER_net.Y: y_3})
 
+        counter = 0
+
+        for x_1, y_1, x_2, y_2, x_3, y_3, w_ in BATCH:
+
+            sess.run((W2V_net.attention_train,W2V_net.own_attention_train), feed_dict={W2V_net.X: x_1, W2V_net.Y: np.array(y_1)[:, None]})
+            sess.run((CNN_net.attention_train,CNN_net.own_attention_train), feed_dict={CNN_net.X: x_2, CNN_net.Y: y_2})
+            sess.run((TAGGER_net.attention_train,TAGGER_net.own_attention_train), feed_dict={TAGGER_net.X: x_3, TAGGER_net.Y: y_3})
+
+            A, B, C = sess.run((sent_dist, w2v_dist, tagger_dist), feed_dict={w: w_})
+
+            batch_labels = np.argmin(np.array([A,B,C]), axis = 0)
+            #one_hot_batch_labels = np.zeros([len(batch_labels), 3])
+            #for i in range(len(batch_labels)):
+            #    one_hot_batch_labels[i][batch_labels[i]] = 1
+            #batch_true_labels_dict = dict(zip(w, batch_labels))
+
+
+
+            sess.run((PERC_net.train,W2V_net.adv_train), feed_dict={PERC_net.X: w_, PERC_net.Y: batch_labels[:, None]})
+
+            counter += 1
+            if counter % 500 == 0:
+                _, __ = sess.run((W2V_net.attention_cost, W2V_net.own_attention_cost), feed_dict={W2V_net.X: x_1, W2V_net.Y: np.array(y_1)[:, None]})
+                print("w2v", _, __)
+                _, __ = sess.run((CNN_net.attention_loss,CNN_net.own_attention_loss), feed_dict={CNN_net.X: x_2, CNN_net.Y: y_2})
+                print("sent",_,__)
+                _, __ = sess.run((TAGGER_net.attention_loss,TAGGER_net.own_attention_loss), feed_dict={TAGGER_net.X: x_3, TAGGER_net.Y: y_3})
+                print("tagger", _, __)
+                _ = sess.run(PERC_net.cost, feed_dict={PERC_net.X: w_, PERC_net.Y: batch_labels[:, None]})
+                print("perc", _)
     # Save trained session:
-    save_path = saver.save(sess, "checkpoints/model.ckpt")
+    #save_path = saver.save(sess, "checkpoints/model.ckpt")
+    save_path = saver.save(sess, "checkpoints/FUCKINGmodel.ckpt")
     embed_mat = sess.run(W2V_net.normalized_embedding)
     embed_mat = np.asarray(embed_mat)
     np.save("/home/boeing/PycharmProjects/CNN/w2v_a_embedding", embed_mat)
+
+    # Evaluate w2v:
+    w2v_scores = []
+    for i in range(w2v_test_batch_number):
+        if i % 100 == 0:
+            print('w2v test batch number', i)
+        w2v_x, w2v_y = [], []
+        w2v_batch = w2v_test[i * w2v_test_batch_size:(i + 1) * w2v_test_batch_size]
+        for ii in range(len(w2v_batch)):
+            batch_x = w2v_batch[ii]
+            batch_y = W2V_net.get_target(w2v_batch, ii)
+            w2v_y.extend(batch_y)
+            w2v_x.extend([batch_x] * len(batch_y))
+        w2v_test_loss = sess.run(W2V_net.test_loss, feed_dict={W2V_net.X: w2v_x, W2V_net.test_Y: np.array(w2v_y)}) #[:, None] - check in restore and unjoint w2v
+        w2v_scores = np.append(w2v_scores, np.asarray(w2v_test_loss))
+
+    print(w2v_scores.shape)
+    w2v_score = np.mean(w2v_scores)
+    print("WORD TO VEC mean loss score:", w2v_score)
 
     # Evaluate tagger:
     #tagger_test_acc = np.array([], dtype="float32")
