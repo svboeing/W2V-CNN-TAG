@@ -1,18 +1,19 @@
 import tensorflow as tf
 import numpy as np
-from ATTENTIONmodule import ATTENTION
 
-class TAGGER(ATTENTION):
-    def __init__(self, embedding, adv_loss, word_id, n_vocab, attention_size, pref_id, tag_id, tagger_batch_size, n_embedding,
-                 tagger_learning_rate, n_hidden_1,n_hidden_2, num_input, num_classes, n_tag_emb, n_suf_emb): #attention_size is added
-        ATTENTION.__init__(self, embedding, n_embedding, n_vocab, attention_size)
+class TAGGER():
+    def __init__(self, word_id, n_vocab, pref_id, tag_id, tagger_batch_size, n_embedding,
+                 tagger_learning_rate, n_hidden_1,n_hidden_2, num_classes, n_tag_emb, n_suf_emb):
+
         self.n_embedding = n_embedding
         self.n_vocab = n_vocab
+        self.own_embedding = tf.Variable(tf.random_uniform((self.n_vocab, self.n_embedding), -1, 1, seed=123))
+
         self.learning_rate = tagger_learning_rate
-        self.adv_loss = adv_loss
+
         self.n_hidden_1 = n_hidden_1
         self.n_hidden_2 = n_hidden_2
-        self.num_input = num_input
+        #self.num_input = num_input #TODO -what is that?
         self.num_classes = num_classes
         self.n_tag_emb = n_tag_emb
         self.n_suf_emb = n_suf_emb
@@ -39,13 +40,10 @@ class TAGGER(ATTENTION):
         #self.lookup_matrix = embedding #if not self.attention else self.attented_embs
         self.X = tf.placeholder(tf.int32, [None, 24])  # 24 comes from supervector
         self.Y = tf.placeholder(tf.int32, [None, self.num_classes])  # num_classes is really len(tag_id)
-        #print(type(n_embedding))
-        #self.a = tf.Variable(tf.random_uniform([self.n_embedding, ], -1, 1))
-        #self.a_embedding = tf.multiply(embedding, self.a)
 
-        self.attention_logits = self.neural_net(tagger_batch_size, self.attented_embs)             #self.logits = self.neural_net(tagger_batch_size)
-        self.own_attention_logits = self.neural_net(tagger_batch_size, self.own_attented_embs)
-        self.test_logits = self.neural_net(1, self.attented_embs)                        #TEST IS ATTENTED!!!!!!!!!!!!!!!!!!!!!!!!!
+        self.logits = self.neural_net(tagger_batch_size)
+
+        self.test_logits = self.neural_net(1)                        #TEST IS ATTENTED!!!!!!!!!!!!!!!!!!!!!!!!!
         self.test_output_labels = tf.argmax(self.test_logits, 1)
 
         self.correct_pred = tf.equal(self.test_output_labels, tf.argmax(self.Y, 1))
@@ -53,19 +51,15 @@ class TAGGER(ATTENTION):
 
 
         # Define loss and optimizer
-        self.attention_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(
-            logits=self.attention_logits, labels=self.Y)) # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        self.own_attention_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(
-            logits=self.own_attention_logits, labels=self.Y))
-        self.attention_optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
+        self.loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(
+            logits=self.logits, labels=self.Y)) # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+        self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
         #self.no_attention_optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
-        self.attention_train = self.attention_optimizer.minimize(self.attention_loss, var_list=(
+        self.train = self.optimizer.minimize(self.loss, var_list=(
             self.weights['h1'], self.weights['h2'],self.weights['out'],self.biases['b1'], self.biases['b2'],
-            self.biases['out'], self.suf, self.pref, self.tags, self.W, self.b, self.u, self.embedding))
-        self.own_attention_train = self.attention_optimizer.minimize(self.own_attention_loss, var_list=(
-            self.weights['h1'], self.weights['h2'],self.weights['out'],self.biases['b1'], self.biases['b2'],
-            self.biases['out'], self.suf, self.pref, self.tags,self.W, self.b, self.u, self.own_embedding))
-        self.adv_train = self.attention_optimizer.minimize(tf.negative(self.adv_loss), var_list=(embedding))
+            self.biases['out'], self.suf, self.pref, self.tags, self.own_embedding))
+
         #self.output_labels = tf.argmax(tagger_logits, 1)
 
     def get_suf(self, some_word):
@@ -193,9 +187,9 @@ class TAGGER(ATTENTION):
         matrix = np.asarray(matrix).astype('int32')
         return matrix
 
-    def neural_net(self, batch_size, emb): # now passing emb NOOOOOOOOOOOOOOOOOOOOOOOOOOOOWWWWWWWWWWWWWWWWWWWWWWWWWWWWW
+    def neural_net(self, batch_size): # now passing emb NOOOOOOOOOOOOOOOOOOOOOOOOOOOOWWWWWWWWWWWWWWWWWWWWWWWWWWWWW
         # Hidden fully connected layer with 256 neurons
-        x_feed = self.form_feed(self.X, batch_size, emb)
+        x_feed = self.form_feed(self.X, batch_size, self.own_embedding)
         layer_1 = tf.add(tf.matmul(x_feed, self.weights['h1']), self.biases['b1'])
         # Hidden fully connected layer with 64 neurons
         layer_2 = tf.add(tf.matmul(layer_1, self.weights['h2']), self.biases['b2'])
