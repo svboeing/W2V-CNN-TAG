@@ -7,7 +7,7 @@ from keras.preprocessing import sequence
 from sklearn.metrics import f1_score
 
 # Import our modules w/ net classes
-#import CNNmodule
+import CNNmodule
 import W2Vmodule
 import TAGGERmodule
 import ENCODERmodule
@@ -17,10 +17,10 @@ n_embedding = 200
 num_global_batches = 5000
 epochs = 15 #15
 sub_threshold = 1e-5
-attention_size = 2
+#attention_size = 2
 
 # Set WDISC params:
-wdisc_batch_size = 64
+wdisc_batch_size = 128
 # Set CNN parameters:
 #sent_max_features = 5000
 #sent_maxlen = 400
@@ -34,10 +34,10 @@ wdisc_batch_size = 64
 # Set w2v parameters:
 n_sampled = 100
 w2v_window_size = 6
-w2v_test_batch_size = 10 ##### WHATS THERE
+w2v_test_batch_size = 100 ##### WHATS THERE 10
 
 # Set tagger parameters:
-tagger_learning_rate = 0.01
+tagger_learning_rate = 0.03
 n_hidden_1 = 256
 n_hidden_2 = 64
 num_input = 24
@@ -52,8 +52,8 @@ with open('text8') as f:
     text = f.read()
 
 w2v_words = text.split(' ')
-w2v_words = w2v_words[1:-int(round(0.05*len(w2v_words)))]
-w2v_test = w2v_words[-int(round(0.05*len(w2v_words))):]
+w2v_words = w2v_words[1:-int(round(0.025*len(w2v_words)))] #0.05
+w2v_test = w2v_words[-int(round(0.025*len(w2v_words))):] #0.05
 print(len(w2v_words), len(w2v_test))
 
 # Sort word tokens by frequencies and save them:
@@ -163,6 +163,8 @@ test_tags = tagged_words_tags[tagger_train_amount:]
 
 tagger_train_labels = [tag_id[tag] for tag in train_tags]
 tagger_test_labels = [tag_id[tag] for tag in test_tags]
+tagger_test_labels_shifted = np.asarray(tagger_test_labels, dtype='int32') - np.ones(len(tagger_test_labels),
+                                                                                             dtype='int32')
 
 # Only full batches on training:
 tagger_batch_size = len(tagger_train_words) // num_global_batches
@@ -171,15 +173,8 @@ tagger_train_labels = tagger_train_labels[:num_global_batches * tagger_batch_siz
 
 # Length of vocab:
 n_vocab = len(int_to_vocab) + 1
+print("n_vocab:",n_vocab)
 
-# Common embeddings variable:
-#embedding = tf.Variable(tf.random_uniform((n_vocab, n_embedding), -1, 1, seed = 123), name = 'common_embs')
-
-# Create instances of neural nets with parameters specified:
-
-#PERC_net = PERCmodule.PERC(embedding, n_embedding, perc_n_hidden, perc_learning_rate, perc_n_sampled)
-
-#better pass whole PERC_net?
 #CNN_net = CNNmodule.CNN(embedding, PERC_net.cost, n_embedding, n_vocab, attention_size, sent_max_features, sent_maxlen, n_filters,
 #                 sent_kernel_size, sent_hidden_dims, sent_learning_rate, sent_width, sent_eval_batch_size) #0
 # Ha -Ha!!!! WORKS TILL HERE
@@ -198,8 +193,37 @@ TAGGER_priv_enc = ENCODERmodule.PRIVATE_ENCODER(TAGGER_net.own_embedding, n_embe
 
 COMMON_enc = ENCODERmodule.COMMON_ENCODER(W2V_net.own_embedding, TAGGER_net.own_embedding, n_embedding, n_hidden = 256, n_reduced = 100)
 
-WAS_dist = ENCODERmodule.WDISC(COMMON_enc.encoded_data_1, COMMON_enc.encoded_data_2, n_reduced = 100, n_hidden=256, batch_size=64, LAMBDA=10)
-# TILL HERE TODO check out whats wrong with taggers f1
+W2V_encoder_loss = tf.nn.sampled_softmax_loss(
+            weights=W2V_net.softmax_w,
+            biases=W2V_net.softmax_b,
+            labels = W2V_net.Y,
+            inputs=tf.concat([COMMON_enc.encoded_data_1, W2V_priv_enc.encoded_data], 1), #COMMON_enc.encoded_data_1, W2V_priv_enc.encoded_data
+            num_sampled=W2V_net.n_sampled,
+            num_classes=W2V_net.n_vocab) #COMMON_enc.X and W2V_priv_enc.X are to be fed from here, not self.X
+
+W2V_encoder_cost = tf.reduce_mean(W2V_encoder_loss)
+W2V_encoder_train = tf.train.AdamOptimizer().minimize(W2V_encoder_cost,
+                                             var_list=(W2V_net.softmax_b, W2V_net.softmax_w, W2V_net.own_embedding)) # TODO PARAMS
+W2V_encoder_logits = tf.nn.bias_add(tf.matmul(tf.concat([COMMON_enc.encoded_data_1, COMMON_enc.encoded_data_1], 1), W2V_net.transposed_sotfmax_w), W2V_net.softmax_b)  #COMMON_enc.X and W2V_priv_enc.X are to be fed from here, not self.X
+W2V_encoder_test_loss = tf.nn.softmax_cross_entropy_with_logits_v2(  # added
+    labels=W2V_net.labels_one_hot,
+    logits=tf.nn.embedding_lookup(W2V_encoder_logits, W2V_net.X)  # check that COMMON_enc.X and W2V_priv_enc.X and self.X are feeded the same
+    )
+
+TAGGER_encoder_logits = TAGGER_net.encoder_neural_net(tagger_batch_size, tf.concat([COMMON_enc.encoded_data_2, TAGGER_priv_enc.encoded_data], 1))
+TAGGER_encoder_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(
+            logits=TAGGER_encoder_logits, labels=TAGGER_net.Y))
+
+TAGGER_encoder_train = tf.train.AdamOptimizer(learning_rate=TAGGER_net.learning_rate).minimize(TAGGER_encoder_loss, var_list=(
+            TAGGER_net.weights['h1'], TAGGER_net.weights['h2'],TAGGER_net.weights['out'],TAGGER_net.biases['b1'], TAGGER_net.biases['b2'],
+            TAGGER_net.biases['out'], TAGGER_net.suf, TAGGER_net.pref, TAGGER_net.tags, TAGGER_net.own_embedding)) # TODO PARAMS
+
+TAGGER_encoder_test_logits = TAGGER_net.encoder_neural_net(1, tf.concat([COMMON_enc.encoded_data_2, TAGGER_priv_enc.encoded_data], 1))
+
+TAGGER_encoder_accuracy = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(TAGGER_encoder_test_logits, 1) , tf.argmax(TAGGER_net.Y, 1)) , tf.float32))
+
+WAS_dist = ENCODERmodule.WDISC(COMMON_enc.encoded_data_1, COMMON_enc.encoded_data_2, n_reduced = 100, n_hidden=256, batch_size=wdisc_batch_size, LAMBDA=10)
+# TODO check out whats wrong with taggers f1
 
 COMMON_dec = ENCODERmodule.DECODER(tf.concat([COMMON_enc.encoded_data_1, W2V_priv_enc.encoded_data], 1),
                                    tf.concat([COMMON_enc.encoded_data_2, TAGGER_priv_enc.encoded_data], 1),
@@ -209,7 +233,7 @@ COMMON_dec = ENCODERmodule.DECODER(tf.concat([COMMON_enc.encoded_data_1, W2V_pri
 COMMON_dec_train = tf.train.AdamOptimizer(
             learning_rate=1e-4,
             beta1=0.5,
-            beta2=0.9
+            beta2=0.9 # TODO PARAMS
         ).minimize(
             COMMON_dec.loss,
             var_list=(COMMON_dec.weights['h1'], COMMON_dec.weights['h2'], COMMON_dec.weights['h3'], COMMON_dec.weights['h4'],
@@ -229,7 +253,7 @@ common_encoder_sim = -tf.reduce_mean(WAS_dist.wdisc_1) + tf.reduce_mean(WAS_dist
 common_encoder_sim_train = tf.train.AdamOptimizer(
             learning_rate=1e-4,
             beta1=0.5,
-            beta2=0.9
+            beta2=0.9# TODO PARAMS
         ).minimize(
             common_encoder_sim,
             var_list=(COMMON_enc.weights['h1'], COMMON_enc.weights['h2'], COMMON_enc.weights['h3'], COMMON_enc.weights['h4'],
@@ -241,7 +265,7 @@ tagger_comm_priv_diff = diff_loss(COMMON_enc.encoded_data_2, TAGGER_priv_enc.enc
 w2v_comm_priv_diff_train =  tf.train.AdamOptimizer(
             learning_rate=1e-4,
             beta1=0.5,
-            beta2=0.9
+            beta2=0.9 # TODO PARAMS
         ).minimize(
             w2v_comm_priv_diff,
             var_list=(COMMON_enc.weights['h1'], COMMON_enc.weights['h2'], COMMON_enc.weights['h3'], COMMON_enc.weights['h4'],
@@ -253,7 +277,7 @@ w2v_comm_priv_diff_train =  tf.train.AdamOptimizer(
 tagger_comm_priv_diff_train = tf.train.AdamOptimizer(
             learning_rate=1e-4,
             beta1=0.5,
-            beta2=0.9
+            beta2=0.9 # TODO PARAMS
         ).minimize(
             tagger_comm_priv_diff,
             var_list=(COMMON_enc.weights['h1'], COMMON_enc.weights['h2'], COMMON_enc.weights['h3'], COMMON_enc.weights['h4'],
@@ -296,18 +320,8 @@ with tf.Session() as sess:
     loss = 0
     sess.run(tf.global_variables_initializer())
 
-
-
-
-    #testtest = [i for i in range(1, 65)]
-    #print(len(testtest))
-    #_, __ = sess.run((0.1 * WAS_dist.gradient_penalty, WAS_dist.disc_cost), feed_dict={COMMON_enc.X: testtest})
-    #print(_, __)
-
-
-
-
     sess.graph.finalize()
+
     # Training all three nets:
     for e in range(1, epochs + 1):
         print("epoch number", e)
@@ -318,39 +332,101 @@ with tf.Session() as sess:
         for w2v_x, w2v_y, tagger_x, tagger_y, batch_words in BATCH:
 
 
-            sess.run((W2V_net.train, W2V_net.train), feed_dict={W2V_net.X: w2v_x, W2V_net.Y: np.array(w2v_y)[:, None]})
-            ##sess.run((CNN_net.attention_train,CNN_net.own_attention_train), feed_dict={CNN_net.X: x_2, CNN_net.Y: y_2})
-            sess.run((TAGGER_net.train, TAGGER_net.train), feed_dict={TAGGER_net.X: tagger_x, TAGGER_net.Y: tagger_y})
+
+            if e <= 1:
+                sess.run(W2V_net.train, feed_dict={W2V_net.X: w2v_x, W2V_net.Y: np.array(w2v_y)[:, None]})
+                sess.run(TAGGER_net.train, feed_dict={TAGGER_net.X: tagger_x, TAGGER_net.Y: tagger_y})
+            else:
+                sess.run(W2V_encoder_train, feed_dict={COMMON_enc.X: w2v_x, W2V_priv_enc.X : w2v_x, W2V_net.Y: np.array(w2v_y)[:, None]}) #W2V_priv_enc.X:w2v_x,
+                sess.run(TAGGER_encoder_train, feed_dict={COMMON_enc.X: tagger_x[:, :7].flatten(), TAGGER_priv_enc.X : tagger_x[:, :7].flatten(), TAGGER_net.X: tagger_x, TAGGER_net.Y: tagger_y})
 
             common_processed_words.update(batch_words)
             if len(common_processed_words) >= wdisc_batch_size:
-                for i in range(1,10):
+                for t in range(1,10):
                     wdisc_batch = random.sample(common_processed_words, wdisc_batch_size)
                     sess.run((w2v_comm_priv_diff_train, tagger_comm_priv_diff_train, common_encoder_sim_train, WAS_dist.train_op, COMMON_dec_train), feed_dict={
                         COMMON_enc.X: wdisc_batch, W2V_priv_enc.X: wdisc_batch, TAGGER_priv_enc.X: wdisc_batch})
-            #A, B, C = sess.run((sent_dist, w2v_dist, tagger_dist), feed_dict={w: w_})
-
-            #batch_labels = np.argmin(np.array([A,B,C]), axis = 0)
-            #one_hot_batch_labels = np.zeros([len(batch_labels), 3])
-            #for i in range(len(batch_labels)):
-            #    one_hot_batch_labels[i][batch_labels[i]] = 1
-            #batch_true_labels_dict = dict(zip(w, batch_labels))
-
-
-
-            #sess.run((PERC_net.train,W2V_net.adv_train), feed_dict={PERC_net.X: w_, PERC_net.Y: batch_labels[:, None]})
 
             counter += 1
             if counter % 500 == 0:
-                _ = sess.run((W2V_net.cost), feed_dict={W2V_net.X: w2v_x, W2V_net.Y: np.array(w2v_y)[:, None]})
+                if e <= 1:
+                    _ = sess.run((W2V_net.cost), feed_dict={W2V_net.X: w2v_x, W2V_net.Y: np.array(w2v_y)[:, None]})
+                else:
+                    _ = sess.run((W2V_encoder_cost), feed_dict={COMMON_enc.X: w2v_x, W2V_priv_enc.X:w2v_x, W2V_net.Y: np.array(w2v_y)[:, None]})
                 print("w2v", _)
-                _ = sess.run((TAGGER_net.loss), feed_dict={TAGGER_net.X: tagger_x, TAGGER_net.Y: tagger_y})
+                if e <= 1:
+                    _ = sess.run((TAGGER_net.loss), feed_dict={TAGGER_net.X: tagger_x, TAGGER_net.Y: tagger_y})
+                else:
+                    _ = sess.run((TAGGER_encoder_loss), feed_dict={COMMON_enc.X:  tagger_x[:, :7].flatten(), TAGGER_priv_enc.X : tagger_x[:, :7].flatten(), TAGGER_net.X: tagger_x, TAGGER_net.Y: tagger_y})
                 print("tagger", _)
                 if len(common_processed_words) >= wdisc_batch_size:
                     wdisc_batch = random.sample(common_processed_words, wdisc_batch_size)
                     a_, b_, c_, d_, e_ = sess.run((WAS_dist.disc_cost, common_encoder_sim, w2v_comm_priv_diff, tagger_comm_priv_diff, COMMON_dec.loss), feed_dict={
                         COMMON_enc.X: wdisc_batch, W2V_priv_enc.X: wdisc_batch, TAGGER_priv_enc.X: wdisc_batch})
                     print("Was. dist:", a_, "Common enc cost:", b_, "w2v orth", c_, "tag orth", d_, "dec", e_)
+            if e > 1 and counter % 1000 == 0:
+                # Evaluate tagger:
+
+                tags_learned = np.array([], dtype="int32")
+                encoded_tagger_eval = True
+                for i in range(len(tagger_test_words)):
+                    x_test = TAGGER_net.form_minibatch(tagger_test_words, tags_learned, i, 1, word_id, pref_id)
+                    y_test = TAGGER_net.form_onehot_batch(tagger_test_labels, i, 1)
+
+
+                    if encoded_tagger_eval == False:
+                        logits = sess.run(TAGGER_net.test_logits,
+                                          feed_dict={TAGGER_net.X: x_test, TAGGER_net.Y: y_test})
+                    else:
+                        logits = sess.run(TAGGER_encoder_test_logits,
+                                          feed_dict={COMMON_enc.X: x_test[:, :7].flatten(),
+                                                     TAGGER_priv_enc.X: x_test[:, :7].flatten(), TAGGER_net.X: x_test,
+                                                     TAGGER_net.Y: y_test})
+                    logits = logits[0]
+
+                    label_learned = np.argmax(logits)
+                    tags_learned = np.append(tags_learned, label_learned)
+
+
+                score = np.asarray(f1_score(y_true=tagger_test_labels_shifted,
+                                            y_pred=tags_learned, average=None))
+                score_weighted = f1_score(y_true=tagger_test_labels_shifted,
+                                          y_pred=tags_learned, average='weighted')
+                print('TAGGER WEIGHTED F1 score:', score_weighted)
+                present_labels = [label for label in range(num_classes) if
+                                  label in tagger_test_labels and label in tags_learned]
+                tagger_f1_dict = dict(zip(present_labels, score))
+                print(tagger_f1_dict)
+
+                # Evaluate w2v:
+                encoded_w2v_eval = True  # True
+                w2v_scores = []
+                for i in range(w2v_test_batch_number):
+                    if i % 10000 == 0:
+                        print('w2v test batch number', i)
+                    w2v_x_test, w2v_y_test = [], []
+                    w2v_batch = w2v_test[i * w2v_test_batch_size:(i + 1) * w2v_test_batch_size]
+
+                    for ii in range(len(w2v_batch)):
+                        batch_x = w2v_batch[ii]
+                        batch_y = W2V_net.get_target(w2v_batch, ii)
+                        w2v_y_test.extend(batch_y)
+                        w2v_x_test.extend([batch_x] * len(batch_y))
+                    if encoded_w2v_eval == True:
+                        kostyl_feed = [t for t in range(n_vocab)]
+                        w2v_test_loss = sess.run(W2V_encoder_test_loss,
+                                                 feed_dict={W2V_net.X: w2v_x_test, COMMON_enc.X: kostyl_feed,
+                                                            W2V_priv_enc.X: kostyl_feed, W2V_net.test_Y: np.array(
+                                                         w2v_y_test)})  # [:, None] - check in restore and unjoint w2v
+                    else:
+                        w2v_test_loss = sess.run(W2V_net.test_loss, feed_dict={W2V_net.X: w2v_x_test,
+                                                                               W2V_net.test_Y: np.array(
+                                                                                   w2v_y_test)})  # [:, None] - check in restore and unjoint w2v
+                    w2v_scores = np.append(w2v_scores, np.asarray(w2v_test_loss))
+
+                #print(w2v_scores.shape)
+                w2v_score = np.mean(w2v_scores)
+                print("WORD TO VEC mean loss score:", w2v_score)
     # Save trained session:
     #save_path = saver.save(sess, "checkpoints/model.ckpt")
     save_path = saver.save(sess, "checkpoints/FUCKINGmodel.ckpt")
@@ -358,57 +434,9 @@ with tf.Session() as sess:
     embed_mat = np.asarray(embed_mat)
     np.save("/home/boeing/PycharmProjects/CNN/w2v_a_embedding", embed_mat)
 
-    # Evaluate w2v:
-    w2v_scores = []
-    for i in range(w2v_test_batch_number):
-        if i % 100 == 0:
-            print('w2v test batch number', i)
-        w2v_x, w2v_y = [], []
-        w2v_batch = w2v_test[i * w2v_test_batch_size:(i + 1) * w2v_test_batch_size]
-        for ii in range(len(w2v_batch)):
-            batch_x = w2v_batch[ii]
-            batch_y = W2V_net.get_target(w2v_batch, ii)
-            w2v_y.extend(batch_y)
-            w2v_x.extend([batch_x] * len(batch_y))
-        w2v_test_loss = sess.run(W2V_net.test_loss, feed_dict={W2V_net.X: w2v_x, W2V_net.test_Y: np.array(w2v_y)}) #[:, None] - check in restore and unjoint w2v
-        w2v_scores = np.append(w2v_scores, np.asarray(w2v_test_loss))
-
-    print(w2v_scores.shape)
-    w2v_score = np.mean(w2v_scores)
-    print("WORD TO VEC mean loss score:", w2v_score)
-
-    # Evaluate tagger:
-    #tagger_test_acc = np.array([], dtype="float32")
-    tags_learned = np.array([], dtype="int32")
-
-    for i in range(len(tagger_test_words)):
-        x = TAGGER_net.form_minibatch(tagger_test_words, tags_learned, i, 1, word_id, pref_id)
-        y = TAGGER_net.form_onehot_batch(tagger_test_labels, i, 1)
-
-        #accuracy = sess.run(TAGGER_net.accuracy, feed_dict={TAGGER_net.X: x, TAGGER_net.Y: y})
-        #tagger_test_acc = np.append(tagger_test_acc, accuracy)
-
-        logits = sess.run(TAGGER_net.test_logits,
-                          feed_dict={TAGGER_net.X: x, TAGGER_net.Y: y})
-        logits = logits[0]
-
-        label_learned = np.argmax(logits)
-        tags_learned = np.append(tags_learned, label_learned)
-
-    #with open("tagger_accs.txt", "a") as f:
-    #    f.write(str(np.mean(tagger_test_acc)))
-    #print("average tagger test accuracy =", np.mean(tagger_test_acc))
-    tagger_test_labels = np.asarray(tagger_test_labels, dtype='int32') - np.ones(len(tagger_test_labels), dtype='int32')
 
 
-    score = np.asarray(f1_score(y_true=tagger_test_labels,
-                                y_pred=tags_learned, average=None))
-    score_weighted = f1_score(y_true=tagger_test_labels,
-                              y_pred=tags_learned, average='weighted')
-    print('TAGGER WEIGHTED F1 score:', score_weighted)
-    present_labels = [label for label in range(num_classes) if label in tagger_test_labels and label in tags_learned]
-    tagger_f1_dict = dict(zip(present_labels, score))
-    print(tagger_f1_dict)
+
 
     #print(score)
 

@@ -11,7 +11,7 @@ class WDISC():
         self.n_reduced = n_reduced
         self.n_hidden = n_hidden
         self.LAMBDA = LAMBDA
-        self.xavier_init = tf.contrib.layers.xavier_initializer()
+        self.xavier_init = tf.contrib.layers.xavier_initializer(seed=12)
         self.weights = {
             'h1': tf.Variable(self.xavier_init([self.n_reduced, self.n_hidden])),
             'h2': tf.Variable(self.xavier_init([self.n_hidden, self.n_hidden])),
@@ -79,7 +79,7 @@ class ENCODER():
         self.n_hidden = n_hidden
         self.n_reduced = n_reduced
 
-        self.xavier_init = tf.contrib.layers.xavier_initializer()
+        self.xavier_init = tf.contrib.layers.xavier_initializer(seed = 13)
         self.weights = {
             'h1': tf.Variable(self.xavier_init(
                 [self.n_embedding, self.n_hidden])),
@@ -136,7 +136,7 @@ class DECODER():
         self.n_embedding = n_embedding
         self.n_reduced = n_reduced
         self.n_hidden = n_hidden
-        self.xavier_init = tf.contrib.layers.xavier_initializer()
+        self.xavier_init = tf.contrib.layers.xavier_initializer(seed = 74)
         self.weights = {
             'h1': tf.Variable(self.xavier_init(
                 [2*self.n_reduced, self.n_hidden])),

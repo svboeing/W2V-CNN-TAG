@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 
 class W2V():
-    def __init__(self, n_vocab, n_embedding, sub_threshold, n_sampled, w2v_window_size): #attention_size is added
+    def __init__(self, n_vocab, n_embedding, sub_threshold, n_sampled, w2v_window_size):
         self.n_embedding = n_embedding
         self.n_vocab = n_vocab
 
@@ -14,11 +14,11 @@ class W2V():
 
         self.X = tf.placeholder(tf.int32, [None], name='w2v_inputs')
         self.Y = tf.placeholder(tf.int32, [None, None], name='w2v_labels')
-        self.test_Y =tf.placeholder(tf.int32, [None], name='w2v_test_inputs')
+        self.test_Y = tf.placeholder(tf.int32, [None], name='w2v_test_inputs')
         #self.embed = self.get_embed()
 
 
-        self.softmax_w = tf.Variable(tf.truncated_normal((self.n_vocab, self.n_embedding)))  # create softmax weight
+        self.softmax_w = tf.Variable(tf.truncated_normal((self.n_vocab, self.n_embedding), seed = 123))  # create softmax weight
         self.softmax_b = tf.Variable(tf.zeros(self.n_vocab), name="softmax_bias")  # create softmax biases
         self.norm = tf.sqrt(tf.reduce_sum(tf.square(self.own_embedding), 1, keepdims=True)) #self.norm = tf.sqrt(tf.reduce_sum(tf.square(self.a_embedding), 1, keepdims=True))
         self.normalized_embedding = self.own_embedding / self.norm #self.normalized_embedding = self.a_embedding / self.norm
@@ -31,8 +31,10 @@ class W2V():
             num_sampled=self.n_sampled,
             num_classes=self.n_vocab)
 
+
+
         self.cost = tf.reduce_mean(self.loss)
-        self.optimizer = tf.train.AdamOptimizer()
+        self.optimizer = tf.train.AdamOptimizer() #learning_rate=1e-4, beta1=0.5, beta2=0.9
         self.train = self.optimizer.minimize(self.cost, var_list=(self.softmax_b, self.softmax_w, self.own_embedding))
 
 
@@ -55,6 +57,7 @@ class W2V():
 
         return list(target_words)
 
-
+    def dummy(self, input):
+        return input
 
 

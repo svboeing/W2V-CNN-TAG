@@ -43,7 +43,7 @@ class TAGGER():
 
         self.logits = self.neural_net(tagger_batch_size)
 
-        self.test_logits = self.neural_net(1)                        #TEST IS ATTENTED!!!!!!!!!!!!!!!!!!!!!!!!!
+        self.test_logits = self.neural_net(1)
         self.test_output_labels = tf.argmax(self.test_logits, 1)
 
         self.correct_pred = tf.equal(self.test_output_labels, tf.argmax(self.Y, 1))
@@ -54,8 +54,8 @@ class TAGGER():
         self.loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(
             logits=self.logits, labels=self.Y)) # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-        self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
-        #self.no_attention_optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
+        self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate, beta1=0.5, beta2=0.9)
+        #self.no_attention_optimizer = tf.train.AdamOptimizer(learning_rate=self.l            beta2=0.9earning_rate)
         self.train = self.optimizer.minimize(self.loss, var_list=(
             self.weights['h1'], self.weights['h2'],self.weights['out'],self.biases['b1'], self.biases['b2'],
             self.biases['out'], self.suf, self.pref, self.tags, self.own_embedding))
@@ -159,7 +159,8 @@ class TAGGER():
         return matrix
 
 
-    def form_feed(self, minibatch, batch_size, emb):  # now passing emb
+    def form_feed(self, minibatch, batch_size, emb):  # now passing emb - instead of emb there goes concat of common and private
+        #encoders,
         words_id_block = minibatch[:, :7]
         tags_id_block = minibatch[:, 7:10]
         pref_id_block = minibatch[:, 10:17]
@@ -178,11 +179,31 @@ class TAGGER():
         feed = tf.concat([words_lookup, tag_lookup, pref_lookup, suf_lookup], 1)
         return feed
 
-    def form_onehot_batch(self, tags_learned, i, batch_size):
+    def form_encoder_feed(self, minibatch, batch_size, looked_up):  # now passing looked_up - there goes concat of common and private
+        #encoders, with feed = TAGGER_net.X[:, :7]
+        #words_id_block = minibatch[:, :7]
+        tags_id_block = minibatch[:, 7:10]
+        pref_id_block = minibatch[:, 10:17]
+        suf_id_block = minibatch[:, 17:24]
+
+
+
+        words_lookup = tf.reshape(looked_up, (batch_size, -1)) # CHANGED
+
+
+
+
+        tag_lookup = tf.reshape(tf.nn.embedding_lookup(self.tags, tags_id_block), (batch_size, -1))
+        suf_lookup = tf.reshape(tf.nn.embedding_lookup(self.suf, suf_id_block), (batch_size, -1))
+        pref_lookup = tf.reshape(tf.nn.embedding_lookup(self.pref, pref_id_block), (batch_size, -1))
+        feed = tf.concat([words_lookup, tag_lookup, pref_lookup, suf_lookup], 1)
+        return feed
+
+    def form_onehot_batch(self, labels, i, batch_size):
         matrix = []
         for counter in range(i, i + batch_size):
             hollow = np.zeros(17)
-            hollow[tags_learned[counter] - 1] = 1
+            hollow[labels[counter] - 1] = 1
             matrix.append(hollow)
         matrix = np.asarray(matrix).astype('int32')
         return matrix
@@ -197,3 +218,12 @@ class TAGGER():
         out_layer = tf.matmul(layer_2, self.weights['out']) + self.biases['out']
         return out_layer
 
+    def encoder_neural_net(self, batch_size, looked_up): # now passing emb NOOOOOOOOOOOOOOOOOOOOOOOOOOOOWWWWWWWWWWWWWWWWWWWWWWWWWWWWW
+        # Hidden fully connected layer with 256 neurons
+        x_feed = self.form_encoder_feed(self.X, batch_size, looked_up)
+        layer_1 = tf.add(tf.matmul(x_feed, self.weights['h1']), self.biases['b1'])
+        # Hidden fully connected layer with 64 neurons
+        layer_2 = tf.add(tf.matmul(layer_1, self.weights['h2']), self.biases['b2'])
+        # Output fully connected layer with a neuron for each class
+        out_layer = tf.matmul(layer_2, self.weights['out']) + self.biases['out']
+        return out_layer
